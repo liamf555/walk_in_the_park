@@ -167,16 +167,18 @@ class AcroPy:
          self.env.acro_states["throttle"] = self.throttle_controller()
       elif len(self.env.controls_high) == 4:
          controls = np.array([roll_rate, pitch_rate, yaw_rate, throttle])
-
       controls = self.env.action_mapper(controls, self.env.controls_low, self.env.controls_high, self.env.action_space.low, self.env.action_space.high)
-      # print(f"controls: {controls}")
+      #print if any value in controls is greater than or less than 1
+      if any(controls > 1) or any(controls < -1):
+         print(f"controls mapper: {controls}")
       return controls
 
    def initial_states(self):
-      self.initial_yaw_deg = self.env.get_euler()[2]
+      self.initial_yaw_deg = np.degrees(self.env.get_euler()[2])
       self.env.acro_states["initial_height"] = self.env.get_altitude()
       self.wp_yaw_deg = self.get_wp_yaw()
-      print(f"wp_yaw_deg: {self.wp_yaw_deg}")
+      # print(f"wp_yaw_deg: {self.wp_yaw_deg}")
+      # print(f"Initial height: {self.env.acro_states['initial_height']}")
 
    def resolve_jump(self, i):
       m = self.env.waypoints[i]
@@ -188,6 +190,11 @@ class AcroPy:
    def get_wp_yaw(self):
       cnum = self.env.request_current_waypoint_index()
       loc_prev = self.env.waypoints[cnum-1]
+
+      #####for linear missions
+      # loc_next = self.env.waypoints[self.env.next_waypoint]
+
+      #####for racetrack   
       loc_next = self.env.waypoints[cnum+1]
 
       i = cnum - 1
@@ -228,7 +235,7 @@ class AcroPy:
       if (roll_deg > 90 or roll_deg < -90) and level_type != 0:
          roll_angle_error = 180 - roll_deg
       else:
-         roll_angle_error = - roll_deg
+         roll_angle_error = -roll_deg
       return roll_angle_error_wrap(roll_angle_error)/(self.env.acro_params["RLL2SRV_TCONST"])
 
 
@@ -278,14 +285,22 @@ class AcroPy:
    #    pitch_rate = pitch_rate
    #    yaw_rate = yaw_rate
    #    return pitch_rate, yaw_rate
-
+   def hold_roll_angle(self, angle):
+      roll_deg = np.degrees(self.env.get_euler()[0])
+      roll_angle_error = angle - roll_deg
+      if abs(roll_angle_error) > 180:
+         if roll_angle_error > 0:
+            roll_angle_error = roll_angle_error - 360
+         else:
+            roll_angle_error = roll_angle_error +360
+      return roll_angle_error/(self.env.acro_params["RLL2SRV_TCONST"])
 
 
 
 class LooPy(AcroPy):
 
    def __init__(self, env, arg1, arg2):
-      print("LooPy init")
+      # print("LooPy init")
       super().__init__(env, arg1, arg2)
       self.target_velocity = 0.0
 
@@ -295,55 +310,56 @@ class LooPy(AcroPy):
       if not self.env.acro_states["running"]:
          self.env.acro_states["running"] = True
          self.env.acro_states["repeat_count"] = self.arg2 - 1
-
+         self.loop_number = 1
          self.env.acro_states["stage"] = 0
          self.target_velocity = np.linalg.norm(self.env.get_velocity_NED())
-
          self.initial_states()
-
-         if self.arg2 != 0:
-            print("Starting loop")
+         if self.arg2 > 0:
+            print(f"Starting {self.arg2} loop")
             # print("Repeat count: ", self.arg2)
          else:
-            print("Starting immelman")
+            print("Starting turnaround")
 
-      self.env.acro_states["throttle"] = self.throttle_controller()
-      # throttle = self.throttle_controller()
+
+      # self.env.acro_states["throttle"] = self.throttle_controller()
+      throttle = self.throttle_controller()
       pitch_deg = np.degrees(self.env.get_euler()[1])
       roll_deg = np.degrees(self.env.get_euler()[0])
-      yaw_deg = np.degrees(self.env.get_euler()[2])
+      # yaw_deg = np.degrees(self.env.get_euler()[2])
       # print("Pitch: %f, Roll: %f, Yaw: %f" % (pitch_deg, roll_deg, yaw_deg))
       vel = np.linalg.norm(self.env.get_velocity_NED())
       pitch_rate = self.arg1
       pitch_rate = pitch_rate = pitch_rate * (1+ 2*((vel/self.target_velocity)-1))
       pitch_rate = constrain(pitch_rate, 0.5*self.arg1, 3*self.arg1)
       # print(f"Stage, repeat_count, roll, pitch,{self.env.acro_states['stage']}, {self.env.acro_states['repeat_count']}, {abs(roll_deg)}, {pitch_deg}")
-
       if self.env.acro_states["stage"] == 0:
-
          if pitch_deg > 60:
             self.env.acro_states["stage"] = 1
       elif self.env.acro_states["stage"] == 1:
             if (abs(roll_deg) < 90 and pitch_deg > -10 and pitch_deg < 10 and self.env.acro_states["repeat_count"] >= 0):
-               print(f"Finished loop {pitch_deg}")
+               print(f"Finished loop {self.loop_number}")
                self.env.acro_states["stage"] = 2
                self.height_PI.reset()
             elif (abs(roll_deg) > 90 and pitch_deg > -10 and pitch_deg < 10 and self.env.acro_states["repeat_count"] < 0):
-               print(f"Finished immelman {pitch_deg}")
+               print(f"Finished turnaround")
                self.env.acro_states["stage"] = 2
                self.height_PI.reset()
-      # elif self.env.acro_states["stage"] == 2:
-      #    # recover alt if abobve or below start and terminate 
-      #    if abs(self.env.get_altitude() - self.env.acro_states["initial_height"]) >= 3: # TODO check this
-      #       print("Recovering alt")
-      #       throttle, pitch_rate, yaw_rate = self._recover_alt()
-         # elif self.env.acro_states["repeat_count"] > 0:
-         #    self.env.acro_states["stage"] = 0
-         #    self.env.acro_stats["repeat_count"]  = self.env.acro_states["repeat_count"] - 1
-         # else:
-         #    self.running = False
-         #    self.end_manoeuvre() # TODO what to do here 
-         #    return
+               # self.done_return = True
+      elif self.env.acro_states["stage"] == 2:
+         # recover alt if abobve or below start and terminate 
+         # if abs(self.env.get_altitude() - self.env.acro_states["initial_height"]) > 3: # TODO check this
+         #    print("Below  alt")
+            # throttle, pitch_rate, yaw_rate = self._recover_alt()
+         if self.env.acro_states["repeat_count"] > 0:
+            self.env.acro_states["stage"] = 0
+            self.env.acro_states["repeat_count"]  = self.env.acro_states["repeat_count"] - 1
+            self.loop_number += 1 
+         else:
+            # self.env.mavlink_mission_set_scripting()
+            # self.running = False
+            # self.end_manoeuvre() # TODO what to do here 
+            self.env.done_return = True
+            return np.array([0,0,0,0])
       throttle = self.throttle_controller()
       # throttle = self.throttle_controller()
       if self.env.acro_states["stage"] == 2 or self.env.acro_states["stage"] == 0:
@@ -354,15 +370,8 @@ class LooPy(AcroPy):
          roll_rate = 0
       else:
          roll_rate = self._earth_frame_wings_level(level_type)
-      # controls = np.array([
-      #    constrain(roll_rate, -self.env.pitch_roll_rate_max, self.env.pitch_roll_rate_max),
-      #    pitch_rate,
-      #    0, throttle])
-      # controls = np.array([
-      #    constrain(roll_rate, -self.env.pitch_roll_rate_max, self.env.pitch_roll_rate_max),
-      #    pitch_rate,
-      #    0])
-      # print(controls)
+      pitch_rate = constrain(pitch_rate, -self.env.pitch_rate_max, self.env.pitch_rate_max)
+      # print(f"loop controls {roll_rate}, {pitch_rate}, {0}, {throttle}" )
       controls = self.map_controls(roll_rate, pitch_rate, 0, throttle)
       # print(controls)
       return controls
@@ -379,23 +388,29 @@ class RollPy(AcroPy):
       if not self.env.acro_states["running"]:
          self.env.acro_states["running"] = True
          self.env.acro_states["repeat_count"] = self.arg2 - 1
-
+         self.roll_num = 1
          self.env.acro_states["stage"] = 0
          self.initial_states()
          self.height_PI.reset()
          print("Starting roll")
-
       roll_rate = self.arg1
-      # pitch_deg = np.degrees(self.env.get_euler()[1])s
+      pitch_deg = np.degrees(self.env.get_euler()[1])
       roll_deg = np.degrees(self.env.get_euler()[0])
       if self.env.acro_states["stage"] == 0:
          if roll_deg > 45:
             self.env.acro_states["stage"] = 1
       # commented out as moved to terminal function
-      # elif self.env.acro_states["stage"= 1:
-      #    if roll_deg > -5 and roll_deg < 5:
-      #       print(f"Finished roll r: {roll_deg} p: {pitch_deg}")
-
+      elif self.env.acro_states["stage"]== 1:
+         if roll_deg > -5 and roll_deg < 5:
+            print(f"Finished roll {self.roll_num}")
+            if self.env.acro_states["repeat_count"] > 0:
+               self.env.acro_states["stage"] = 0
+               self.env.acro_states["repeat_count"] = self.env.acro_states["repeat_count"] - 1
+               self.roll_num += 1
+            else:
+               self.env.acro_states["stage"] = 2
+               return
+               
       if self.env.acro_states["stage"] < 2:
          throttle = self.throttle_controller()
          # throttle = self.throttle_controller()
@@ -422,25 +437,30 @@ class KnifePy(AcroPy):
          self.height_PI.reset()
          self.knife_edge_s = now
          print(f"Starting knife edge {self.arg1}")
-
       i = 0
       self.env.acro_states["duration"] = now - self.knife_edge_s
+      if self.env.acro_states["duration"] < self.arg2:
+         
       # print(f"Duration {self.env.acro_states['duration']}")
-      roll_deg = np.degrees(self.env.get_euler()[0])
-      roll_angle_error = self.arg1 - roll_deg
-      if abs(roll_angle_error) > 180:
-         if roll_angle_error > 0:
-            roll_angle_error = roll_angle_error - 360
-         else:
-            roll_angle_error = roll_angle_error + 360
-      roll_rate = roll_angle_error / self.env.acro_params["RLL2SRV_TCONST"]
-      target_pitch = self.height_PI.update(self.env.acro_states["initial_height"])
-      pitch_rate, yaw_rate = self.pitch_controller(target_pitch, self.wp_yaw_deg, self.env.acro_params["PTCH2SRV_TCONST"])
-      throttle = self.throttle_controller()
+         roll_deg = np.degrees(self.env.get_euler()[0])
+         roll_angle_error = self.arg1 - roll_deg
+         if abs(roll_angle_error) > 180:
+            if roll_angle_error > 0:
+               roll_angle_error = roll_angle_error - 360
+            else:
+               roll_angle_error = roll_angle_error + 360
+         roll_rate = roll_angle_error / self.env.acro_params["RLL2SRV_TCONST"]
+         roll_rate = constrain(roll_rate, -self.env.roll_rate_max, self.env.roll_rate_max)
+         target_pitch = self.height_PI.update(self.env.acro_states["initial_height"])
+         pitch_rate, yaw_rate = self.pitch_controller(target_pitch, self.wp_yaw_deg, self.env.acro_params["PTCH2SRV_TCONST"])
+         throttle = self.throttle_controller()
       # throttle = self.throttle_controller()
       # controls = np.array([roll_rate, pitch_rate, yaw_rate, throttle])
-      controls = self.map_controls(roll_rate, pitch_rate, yaw_rate, throttle)
-      return controls
+         controls = self.map_controls(roll_rate, pitch_rate, yaw_rate, throttle)
+         return controls
+      else:
+         print("Finished knife edge")
+         return
 
 class PausePy(AcroPy):
    def __init__(self, env, arg1, arg2):
@@ -451,6 +471,7 @@ class PausePy(AcroPy):
       now = time.time()
       # print(f" Running? {self.env.acro_states['running']}")
       if not self.env.acro_states["running"]:
+         # print("Startig pause")
          self.env.acro_states["running"] = True
          self.initial_states()
          self.height_PI.reset()
@@ -458,15 +479,19 @@ class PausePy(AcroPy):
          print(f"Starting pause {self.arg1}")
       i = 0
       self.env.acro_states["duration"] = now - self.knife_edge_s
-      roll_rate = self._earth_frame_wings_level(0)
-      target_pitch = self.height_PI.update(self.env.acro_states["initial_height"])
-      pitch_rate, yaw_rate = self.pitch_controller(target_pitch, self.wp_yaw_deg, self.env.acro_params["PTCH2SRV_TCONST"])
-      throttle = self.throttle_controller()
-      
-      # throttle = self.throttle_controller()
-      # controls = np.array([roll_rate, pitch_rate, yaw_rate, throttle])
-      controls = self.map_controls(roll_rate, pitch_rate, yaw_rate, throttle)
-      return controls
+      if self.env.acro_states["duration"] < self.arg1:
+         roll_rate = self._earth_frame_wings_level(0)
+         target_pitch = self.height_PI.update(self.env.acro_states["initial_height"])
+         pitch_rate, yaw_rate = self.pitch_controller(target_pitch, self.wp_yaw_deg, self.env.acro_params["PTCH2SRV_TCONST"])
+         throttle = self.throttle_controller()
+         # print(f"roll_rate: {roll_rate}, pitch_rate: {pitch_rate}, yaw_rate: {yaw_rate}, throttle: {throttle}")
+         # throttle = self.throttle_controller()
+         # controls = np.array([roll_rate, pitch_rate, yaw_rate, throttle])
+         controls = self.map_controls(roll_rate, pitch_rate, yaw_rate, throttle)
+         return controls
+      else:
+         print("Finished pause")
+         return
 
 class CirclePy(AcroPy):
    def __init__(self, env, arg1, arg2):
@@ -496,7 +521,11 @@ class CirclePy(AcroPy):
       if self.env.acro_states["stage"] == 0:
          if abs(self.env.acro_states["rolling_circle_yaw_deg"]) > 10:
             self.env.acro_states["stage"] = 1
-
+      elif self.env.acro_states["stage"] == 1:
+         if abs(self.env.acro_states["rolling_circle_yaw_deg"]) >=360:
+            print("Finished rolling circle")
+            # self.env.acro_states["stage"] = 2
+            # return
       if self.env.acro_states["stage"] < 2:
          target_pitch = self.height_PI.update(self.env.acro_states["initial_height"])
          vel = self.env.get_velocity_NED()
@@ -505,10 +534,162 @@ class CirclePy(AcroPy):
             self._wrap_360(self.env.acro_states["rolling_circle_yaw_deg"] + self.initial_yaw_deg),
             self.env.acro_params["PTCH2SRV_TCONST"]
          )
+         yaw_rate = constrain(yaw_rate, -self.env.yaw_rate_max, self.env.yaw_rate_max)
+         pitch_rate = constrain(pitch_rate, -self.env.pitch_rate_max, self.env.pitch_rate_max)
          throttle = self.throttle_controller()
          # throttle = self.throttle_controller()
-         # throttle = constrain(throttle, 0, 100)
+         throttle = constrain(throttle, 0, 100)
          # controls = np.array([roll_rate_dps, pitch_rate, yaw_rate, throttle])
          controls =  self.map_controls(roll_rate_dps, pitch_rate, yaw_rate, throttle)
-         
          return controls
+      
+class KnifeCirclePy(AcroPy):
+   def __init__(self, env, arg1, arg2):
+      super().__init__(env, arg1, arg2)
+      self.knife_circle_last_ms = 0
+
+   def do_manoeuvre(self):
+      if not self.env.acro_states["running"]:
+         self.env.acro_states["running"] = True
+         self.env.acro_states["stage"] = 0
+         self.env.acro_states["knife_circle_yaw_deg"] = 0
+         self.knife_circle_last_ms = time.time()
+         self.initial_states()
+         self.height_PI.reset()
+         print("Starting knife edge circle")
+      yaw_rate_dps = self.arg1
+      pitch_deg = np.degrees(self.env.get_euler()[1])
+      yaw_deg = np.degrees(self.env.get_euler()[2])
+      now = time.time()
+      dt = now - self.knife_circle_last_ms
+      self.knife_circle_last_ms = now
+      self.env.acro_states["knife_circle_yaw_deg"] += yaw_rate_dps * dt
+      if self.env.acro_states["stage"] == 0:
+         if abs(self.env.acro_states["knife_circle_yaw_deg"]) > 10:
+            self.env.acro_states["stage"] = 1
+      elif self.env.acro_states["stage"] == 1:
+         if abs(self.env.acro_states["knife_circle_yaw_deg"]) >=360:
+            print("Finished knife edge circle")
+            # self.env.acro_states["stage"] = 2
+            # return
+      #  make terminal function
+
+      if self.env.acro_states["stage"] < 2:
+         roll_deg = np.degrees(self.env.get_euler()[0])
+         if self.arg1 > 0:
+            angle = 90
+         else:
+            angle = -90
+         roll_angle_error = angle - roll_deg
+         if abs(roll_angle_error) > 180:
+            if roll_angle_error > 0:
+               roll_angle_error = roll_angle_error - 360
+            else:
+               roll_angle_error = roll_angle_error + 360
+         roll_rate = roll_angle_error / self.env.acro_params["RLL2SRV_TCONST"]
+         roll_rate = constrain(roll_rate, -self.env.roll_rate_max, self.env.roll_rate_max)
+         target_pitch = self.height_PI.update(self.env.acro_states["initial_height"])
+         vel = self.env.get_velocity_NED()
+         pitch_rate, yaw_rate = self.pitch_controller(
+            target_pitch,
+            self._wrap_360(self.env.acro_states["knife_circle_yaw_deg"] + self.initial_yaw_deg),
+            self.env.acro_params["PTCH2SRV_TCONST"]
+         )
+         throttle = self.throttle_controller()
+         throttle = constrain(throttle, 0, 100)
+         controls = self.map_controls(roll_rate, pitch_rate, yaw_rate, throttle)
+         return controls
+      
+
+
+class Roll4PointPy(AcroPy):
+   def __init__(self, env, arg1, arg2):
+      super().__init__(env, arg1, arg2)
+
+   def do_manoeuvre(self):
+      arg2 = self.arg2
+      if not self.env.acro_states["running"]:
+         self.env.acro_states["running"] = True
+         self.env.acro_states["stage"] = 0
+         self.height_PI.reset()
+         self.initial_states()
+         self.roll_ms = 0
+         print("Starting roll 4 point")
+      pitch_deg = np.degrees(self.env.get_euler()[1])
+      roll_deg = np.degrees(self.env.get_euler()[0])
+      # print(f"Stage: {self.env.acro_states['stage']}, roll_deg: {roll_deg}")
+      # print(f"arg2: {arg2}")
+      if self.env.acro_states["stage"] == 0:
+         roll_rate = self.arg1
+         if roll_deg >= 90:
+            self.env.acro_states["stage"] = 1
+            self.roll_ms = time.time()
+      elif self.env.acro_states["stage"] == 1:
+         roll_rate = self.hold_roll_angle(90)
+         # print(f"time diff {time.time() - self.roll_ms}")
+         if (time.time() - self.roll_ms) > arg2:
+            self.env.acro_states["stage"] = 2
+      elif self.env.acro_states["stage"] == 2:
+         roll_rate = self.arg1
+         if roll_deg >= 175 or roll_deg <= -175:
+            self.env.acro_states["stage"] = 3
+            self.roll_ms = time.time()
+      elif self.env.acro_states["stage"] == 3:
+         roll_rate = self.hold_roll_angle(180)
+         if (time.time() - self.roll_ms) > arg2:
+            self.env.acro_states["stage"] = 4
+      elif self.env.acro_states["stage"] == 4:
+         roll_rate = self.arg1
+         if roll_deg >= -90 and roll_deg <= 175:
+            self.env.acro_states["stage"] = 5
+            self.roll_ms = time.time()
+      elif self.env.acro_states["stage"] == 5:
+         roll_rate = self.hold_roll_angle(-90)
+         if (time.time() - self.roll_ms) > arg2:
+            self.env.acro_states["stage"] = 6
+      elif self.env.acro_states["stage"] == 6:
+         roll_rate = self.arg1
+         if roll_deg > -5 and roll_deg < 5:
+            print(f"Finished roll 4 point roll")
+            self.env.acro_states["stage"] = 7
+      if self.env.acro_states["stage"] < 7:
+         roll_rate = constrain(roll_rate, -self.env.roll_rate_max, self.env.roll_rate_max)
+         throttle = self.throttle_controller()
+         target_pitch = self.height_PI.update(self.env.acro_states["initial_height"])
+         pitch_rate, yaw_rate = self.pitch_controller(target_pitch, self.wp_yaw_deg, self.env.acro_params["PTCH2SRV_TCONST"])
+         controls = self.map_controls(roll_rate, pitch_rate, yaw_rate, throttle)
+         return controls
+            
+class SplitSPy(AcroPy):
+
+   def __init__(self, env, arg1, arg2):
+      super().__init__(env, arg1, arg2)
+ 
+   def do_manoeuvre(self):
+      if not self.env.acro_states["running"]:
+         self.env.acro_states["running"] = True
+         self.env.acro_states["stage"] = 0
+         self.initial_states()
+         self.height_PI.reset()
+         print("Starting split S")
+      pitch_deg = np.degrees(self.env.get_euler()[1])
+      roll_deg = np.degrees(self.env.get_euler()[0])
+      if self.env.acro_states["stage"] == 0:
+         roll_rate = self.arg2
+         wp_yaw_deg = self.get_wp_yaw()
+         target_pitch = self.height_PI.update(self.env.acro_states["initial_height"])
+         pitch_rate, yaw_rate = self.pitch_controller(target_pitch, wp_yaw_deg, self.env.acro_params["PTCH2SRV_TCONST"])
+         if roll_deg >= 175 or roll_deg <= -175:
+            self.env.acro_states["stage"] = 1
+      elif self.env.acro_states["stage"] == 1:
+         if abs(pitch_deg) > 85 and  abs(pitch_deg) < 95:
+            roll_rate = 0
+         else:
+            roll_rate = self._earth_frame_wings_level(1)
+         pitch_rate = self.arg1
+         if abs(roll_deg) < 90 and pitch_deg > -5 and pitch_deg < 5:
+            print(f"Finished split S r: {roll_deg} p: {pitch_deg}")
+            self.env.acro_states["stage"] = 2
+      throttle = self.throttle_controller()
+      controls = self.map_controls(roll_rate, pitch_rate, 0.0, throttle)
+      return controls
